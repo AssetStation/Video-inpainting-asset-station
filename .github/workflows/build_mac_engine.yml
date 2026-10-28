@@ -3,9 +3,6 @@ name: Build Mac Executables (Intel x86_64 & Apple Silicon)
 on:
   push:
     branches: [ master, main ]
-    paths:
-      - 'engine/video_inpaint_engine.py'
-      - '.github/workflows/build_mac_engine.yml'
   workflow_dispatch: # Allows manual run button in GitHub Actions UI
 
 jobs:
@@ -39,6 +36,12 @@ jobs:
 
     - name: Compile Intel Executable
       run: |
+        TARGET_SCRIPT="video_inpaint_engine.py"
+        if [ ! -f "$TARGET_SCRIPT" ] && [ -f "engine/video_inpaint_engine.py" ]; then
+          TARGET_SCRIPT="engine/video_inpaint_engine.py"
+        fi
+        echo "Compiling target: $TARGET_SCRIPT"
+
         arch -x86_64 pyinstaller --target-arch x86_64 --onefile --clean -y \
           --name video_inpaint_engine_x86_64 \
           --exclude-module torch \
@@ -47,7 +50,7 @@ jobs:
           --exclude-module scipy \
           --exclude-module pandas \
           --exclude-module IPython \
-          engine/video_inpaint_engine.py
+          "$TARGET_SCRIPT"
         chmod +x dist/video_inpaint_engine_x86_64
         codesign --force -s - dist/video_inpaint_engine_x86_64 || true
         file dist/video_inpaint_engine_x86_64 # Prints architecture (MUST show: Mach-O 64-bit executable x86_64)
@@ -80,6 +83,12 @@ jobs:
 
     - name: Compile Apple Silicon Executable
       run: |
+        TARGET_SCRIPT="video_inpaint_engine.py"
+        if [ ! -f "$TARGET_SCRIPT" ] && [ -f "engine/video_inpaint_engine.py" ]; then
+          TARGET_SCRIPT="engine/video_inpaint_engine.py"
+        fi
+        echo "Compiling target: $TARGET_SCRIPT"
+
         pyinstaller --target-arch arm64 --onefile --clean -y \
           --name video_inpaint_engine \
           --exclude-module torch \
@@ -88,7 +97,7 @@ jobs:
           --exclude-module scipy \
           --exclude-module pandas \
           --exclude-module IPython \
-          engine/video_inpaint_engine.py
+          "$TARGET_SCRIPT"
         chmod +x dist/video_inpaint_engine
         codesign --force -s - dist/video_inpaint_engine || true
         file dist/video_inpaint_engine # Prints architecture (MUST show: Mach-O 64-bit executable arm64)
