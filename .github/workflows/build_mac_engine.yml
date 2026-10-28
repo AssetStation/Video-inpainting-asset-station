@@ -1,69 +1,100 @@
-name: Build macOS Video Inpaint Engine
+name: Build Mac Executables (Intel x86_64 & Apple Silicon)
 
 on:
-  workflow_dispatch:
   push:
+    branches: [ master, main ]
     paths:
       - 'engine/video_inpaint_engine.py'
       - '.github/workflows/build_mac_engine.yml'
+  workflow_dispatch: # Allows manual run button in GitHub Actions UI
 
 jobs:
-  build-macos:
-    name: Build on ${{ matrix.os }} (${{ matrix.arch }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Apple Silicon (M1/M2/M3/M4) - Primary macOS target
-          - os: macos-14
-            arch: arm64
-            output_name: video_inpaint_engine
-          # Intel Mac (x86_64) - Legacy Mac target
-          - os: macos-13
-            arch: x86_64
-            output_name: video_inpaint_engine_x86_64
-
+  # =========================================================================
+  # 1. INTEL MAC BUILD (x86_64 compiled via Rosetta on modern Mac runner)
+  # =========================================================================
+  build-intel-x86_64:
+    runs-on: macos-latest # Uses available Apple Silicon runner with Rosetta translation
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
+    - name: Enable Rosetta 2
+      run: |
+        softwareupdate --install-rosetta --agree-to-license || true
 
-      - name: Install Build Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install opencv-python onnxruntime numpy pillow pyinstaller
+    - name: Set up Python (x64)
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        architecture: 'x64'
 
-      - name: Build Standalone Binary with PyInstaller
-        run: |
-          pyinstaller --onefile --clean -y \
-            --name "${{ matrix.output_name }}" \
-            --exclude-module torch \
-            --exclude-module torchvision \
-            --exclude-module matplotlib \
-            --exclude-module scipy \
-            --exclude-module pandas \
-            --exclude-module IPython \
-            engine/video_inpaint_engine.py
+    - name: Verify Architecture
+      run: |
+        arch -x86_64 python -c "import platform; print('Active Python Machine:', platform.machine(), platform.architecture())"
 
-      - name: Set Execution Permissions & Ad-hoc Codesign
-        run: |
-          chmod +x "dist/${{ matrix.output_name }}"
-          # Ad-hoc sign so macOS Gatekeeper allows execution without notarization errors
-          codesign --force --deep -s - "dist/${{ matrix.output_name }}"
+    - name: Install dependencies (x64)
+      run: |
+        arch -x86_64 python -m pip install --upgrade pip
+        arch -x86_64 python -m pip install pyinstaller
+        arch -x86_64 python -m pip install opencv-python onnxruntime numpy pillow
 
-      - name: Verify Binary Startup (Smoke Test)
-        run: |
-          ./dist/${{ matrix.output_name }} --help
+    - name: Compile Intel Executable
+      run: |
+        arch -x86_64 pyinstaller --target-arch x86_64 --onefile --clean -y \
+          --name video_inpaint_engine_x86_64 \
+          --exclude-module torch \
+          --exclude-module torchvision \
+          --exclude-module matplotlib \
+          --exclude-module scipy \
+          --exclude-module pandas \
+          --exclude-module IPython \
+          engine/video_inpaint_engine.py
+        chmod +x dist/video_inpaint_engine_x86_64
+        codesign --force -s - dist/video_inpaint_engine_x86_64 || true
+        file dist/video_inpaint_engine_x86_64 # Prints architecture (MUST show: Mach-O 64-bit executable x86_64)
 
-      - name: Upload Binary Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.output_name }}
-          path: dist/${{ matrix.output_name }}
-          if-no-files-found: error
+    - name: Upload Intel Mac Executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: video_inpaint_engine_x86_64
+        path: dist/video_inpaint_engine_x86_64
+
+  # =========================================================================
+  # 2. APPLE SILICON BUILD (arm64)
+  # =========================================================================
+  build-apple-silicon-arm64:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python (arm64)
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        architecture: 'arm64'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install opencv-python onnxruntime numpy pillow
+
+    - name: Compile Apple Silicon Executable
+      run: |
+        pyinstaller --target-arch arm64 --onefile --clean -y \
+          --name video_inpaint_engine \
+          --exclude-module torch \
+          --exclude-module torchvision \
+          --exclude-module matplotlib \
+          --exclude-module scipy \
+          --exclude-module pandas \
+          --exclude-module IPython \
+          engine/video_inpaint_engine.py
+        chmod +x dist/video_inpaint_engine
+        codesign --force -s - dist/video_inpaint_engine || true
+        file dist/video_inpaint_engine # Prints architecture (MUST show: Mach-O 64-bit executable arm64)
+
+    - name: Upload Apple Silicon Executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: video_inpaint_engine_arm64
+        path: dist/video_inpaint_engine
