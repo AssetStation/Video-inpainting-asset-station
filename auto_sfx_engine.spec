@@ -28,7 +28,14 @@ hiddenimports = [
     'onnxruntime',
 ]
 
-for pkg in ['onnxruntime', 'tokenizers', 'librosa', '_soundfile_data']:
+packages_to_collect = ['onnxruntime', 'tokenizers', '_soundfile_data']
+try:
+    import librosa
+    packages_to_collect.append('librosa')
+except ImportError:
+    pass
+
+for pkg in packages_to_collect:
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
         datas += pkg_datas
