@@ -17,7 +17,12 @@ import subprocess
 import numpy as np
 import scipy.fft as fft
 import soundfile as sf
-import librosa
+try:
+    import librosa
+    HAS_LIBROSA = True
+except Exception:
+    librosa = None
+    HAS_LIBROSA = False
 import onnxruntime as ort
 from tokenizers import Tokenizer
 
@@ -196,7 +201,7 @@ class ClapEngine:
     def extract_audio_features(self, pcm_data, sr=48000):
         """Extracts (1, 1, 1001, 64) log-mel spectrogram for CLAP Audio Encoder."""
         if sr != 48000:
-            pcm_data = librosa.resample(pcm_data, orig_sr=sr, target_sr=48000)
+            pcm_data = AudioDecoder.resample(pcm_data, sr, 48000)
 
         # Ensure 10 seconds (480,000 samples) via repeatpad
         target_len = 480000
@@ -206,10 +211,57 @@ class ClapEngine:
         else:
             pcm_data = pcm_data[:target_len]
 
-        mel = librosa.feature.melspectrogram(
-            y=pcm_data, sr=48000, n_fft=1024, hop_length=480, n_mels=64, fmin=50, fmax=14000, power=2.0
-        )
-        log_mel = librosa.power_to_db(mel, ref=np.max)
+        if HAS_LIBROSA and librosa is not None:
+            mel = librosa.feature.melspectrogram(
+                y=pcm_data, sr=48000, n_fft=1024, hop_length=480, n_mels=64, fmin=50, fmax=14000, power=2.0
+            )
+            log_mel = librosa.power_to_db(mel, ref=np.max)
+        else:
+            # Native fallback if librosa is not installed
+            n_fft = 1024
+            hop_length = 480
+            n_mels = 64
+            pad_len = n_fft // 2
+            y_pad = np.pad(pcm_data, pad_len, mode='reflect')
+            n_frames = 1 + (len(y_pad) - n_fft) // hop_length
+            frames = np.lib.stride_tricks.as_strided(
+                y_pad,
+                shape=(n_frames, n_fft),
+                strides=(y_pad.strides[0] * hop_length, y_pad.strides[0])
+            )
+            spec = np.fft.rfft(frames * np.hanning(n_fft), n=n_fft, axis=1).T
+            power_spec = np.abs(spec) ** 2.0
+            # Slaney mel filterbank
+            fftfreqs = np.linspace(0, 24000, int(1 + n_fft // 2), endpoint=True)
+            f_sp = 200.0 / 3
+            def _hz_to_mel(f):
+                f = np.asanyarray(f)
+                m = f / f_sp
+                log_idx = f >= 1000.0
+                m[log_idx] = 15.0 + np.log(f[log_idx] / 1000.0) / (np.log(6.4) / 27.0)
+                return m
+            def _mel_to_hz(m):
+                m = np.asanyarray(m)
+                f = f_sp * m
+                log_idx = m >= 15.0
+                f[log_idx] = 1000.0 * np.exp((np.log(6.4) / 27.0) * (m[log_idx] - 15.0))
+                return f
+            mels = np.linspace(_hz_to_mel(50.0), _hz_to_mel(14000.0), n_mels + 2)
+            mel_f = _mel_to_hz(mels)
+            weights = np.zeros((n_mels, int(1 + n_fft // 2)), dtype=np.float32)
+            ramps = np.subtract.outer(mel_f, fftfreqs)
+            fdiff = np.diff(mel_f)
+            for i in range(n_mels):
+                lower = -ramps[i] / fdiff[i]
+                upper = ramps[i + 2] / fdiff[i + 1]
+                weights[i] = np.maximum(0, np.minimum(lower, upper))
+            enorm = 2.0 / (mel_f[2 : n_mels + 2] - mel_f[:n_mels])
+            weights *= enorm[:, np.newaxis]
+            mel_out = np.dot(weights, power_spec)
+            ref_val = np.max(mel_out)
+            log_mel = 10.0 * np.log10(np.maximum(1e-10, mel_out)) - 10.0 * np.log10(np.maximum(1e-10, ref_val))
+            log_mel = np.maximum(log_mel, -80.0)
+
         log_mel = log_mel.T.astype(np.float32)
         return np.expand_dims(np.expand_dims(log_mel, axis=0), axis=0)
 
@@ -239,6 +291,23 @@ class AudioDecoder:
     TARGET_SR = 48000  # 48 kHz standard for CLAP
 
     @classmethod
+    def resample(cls, data, orig_sr, target_sr):
+        """High-precision polyphase audio resampler with graceful fallback."""
+        if orig_sr == target_sr or len(data) == 0:
+            return data
+        if HAS_LIBROSA and librosa is not None:
+            try:
+                return librosa.resample(data, orig_sr=orig_sr, target_sr=target_sr)
+            except Exception:
+                pass
+        import math
+        from scipy.signal import resample_poly
+        gcd = math.gcd(int(orig_sr), int(target_sr))
+        up = target_sr // gcd
+        down = orig_sr // gcd
+        return resample_poly(data, up, down).astype(np.float32)
+
+    @classmethod
     def decode(cls, file_path):
         if not os.path.exists(file_path):
             return None, None
@@ -250,7 +319,7 @@ class AudioDecoder:
                 data = np.mean(data, axis=1)  # Downmix to mono
 
             if sr != cls.TARGET_SR and len(data) > 0:
-                data = librosa.resample(data, orig_sr=sr, target_sr=cls.TARGET_SR)
+                data = cls.resample(data, sr, cls.TARGET_SR)
                 sr = cls.TARGET_SR
 
             max_peak = np.max(np.abs(data))
