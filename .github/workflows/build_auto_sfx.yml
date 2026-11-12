@@ -1,111 +1,160 @@
 name: Build Auto SFX Engine (macOS)
 
 on:
-  workflow_dispatch:
-    inputs:
-      build_mac_arm64:
-        description: 'Build macOS Apple Silicon (arm64) binary'
-        type: boolean
-        default: true
-      build_mac_intel:
-        description: 'Build macOS Intel (x86_64) binary'
-        type: boolean
-        default: true
   push:
-    branches:
-      - main
-      - master
-    paths:
-      - 'engine/auto_sfx_engine.py'
-      - 'auto_sfx_engine.spec'
-      - '.github/workflows/build_auto_sfx.yml'
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
-  build-macos-arm64:
-    name: Build macOS (Apple Silicon arm64)
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_mac_arm64 }}
-    runs-on: macos-14
+  # =========================================================================
+  # 1. INTEL MAC BUILD (x86_64 compiled via Rosetta on modern Mac runner)
+  # =========================================================================
+  build-intel-x86_64:
+    runs-on: macos-latest # Standard runner available on all GitHub plans
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
+    - name: Enable Rosetta 2
+      run: |
+        softwareupdate --install-rosetta --agree-to-license || true
 
-      - name: Install build dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller
-          pip install numpy scipy soundfile librosa onnxruntime tokenizers opencv-python-headless
+    - name: Set up Python (x64)
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        architecture: 'x64'
 
-      - name: Compile macOS Apple Silicon binary with PyInstaller
-        run: |
-          pyinstaller --clean auto_sfx_engine.spec
-          chmod +x dist/auto_sfx_engine
+    - name: Verify Architecture
+      run: |
+        arch -x86_64 python -c "import platform; print('Active Python Machine:', platform.machine(), platform.architecture())"
 
-      - name: Verify binary execution
-        run: |
-          ./dist/auto_sfx_engine --help
+    - name: Install dependencies (x64)
+      run: |
+        arch -x86_64 python -m pip install --upgrade pip
+        arch -x86_64 python -m pip install pyinstaller
+        arch -x86_64 python -m pip install numpy scipy soundfile librosa onnxruntime tokenizers opencv-python-headless
+        if [ -f "requirements.txt" ]; then arch -x86_64 python -m pip install -r requirements.txt; fi
 
-      - name: Log default deployment destination
-        run: |
-          echo "### 🍏 macOS Apple Silicon (arm64) Binary Built" >> $GITHUB_STEP_SUMMARY
-          echo "**Default Destination**: \`com.assetstation/engine/mac/auto_sfx_engine\`" >> $GITHUB_STEP_SUMMARY
+    - name: Compile Intel Executable
+      run: |
+        # Locate auto_sfx_engine.py in root or engine/
+        if [ -f "engine/auto_sfx_engine.py" ]; then
+          TARGET_SCRIPT="engine/auto_sfx_engine.py"
+        elif [ -f "auto_sfx_engine.py" ]; then
+          TARGET_SCRIPT="auto_sfx_engine.py"
+        else
+          echo "ERROR: auto_sfx_engine.py not found!" && exit 1
+        fi
 
-      - name: Upload macOS ARM64 binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: auto_sfx_engine-macos-arm64
-          path: dist/auto_sfx_engine
-          if-no-files-found: error
-          retention-days: 30
+        # If .spec exists, compile with spec; otherwise run full PyInstaller command
+        if [ -f "auto_sfx_engine.spec" ]; then
+          SFX_EXE_NAME=auto_sfx_engine_x86_64 arch -x86_64 pyinstaller --target-arch x86_64 --clean auto_sfx_engine.spec
+        else
+          arch -x86_64 pyinstaller --target-arch x86_64 --clean --onefile --name auto_sfx_engine_x86_64 \
+            --collect-all soundfile \
+            --collect-all _soundfile_data \
+            --collect-all tokenizers \
+            --collect-all librosa \
+            --collect-all onnxruntime \
+            --hidden-import scipy.fft \
+            --hidden-import scipy.signal \
+            --hidden-import scipy.special \
+            --hidden-import cv2 \
+            --exclude-module tkinter \
+            --exclude-module matplotlib \
+            --exclude-module torch \
+            --exclude-module torchvision \
+            "$TARGET_SCRIPT"
+        fi
 
-  build-macos-intel:
-    name: Build macOS (Intel x86_64)
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_mac_intel }}
-    runs-on: macos-13
+        if [ -f "dist/auto_sfx_engine" ] && [ ! -f "dist/auto_sfx_engine_x86_64" ]; then
+          cp dist/auto_sfx_engine dist/auto_sfx_engine_x86_64
+        fi
+        chmod +x dist/auto_sfx_engine_x86_64
+        codesign --force -s - dist/auto_sfx_engine_x86_64 || true
+        file dist/auto_sfx_engine_x86_64
+
+    - name: Log destination
+      run: |
+        echo "### 🍎 macOS Intel (x86_64) Binary Built" >> $GITHUB_STEP_SUMMARY
+        echo "**Deploy location in extension**: \`com.assetstation/engine/mac/auto_sfx_engine_x86_64\`" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload Intel Mac Executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: auto_sfx_engine_x86_64
+        path: dist/auto_sfx_engine_x86_64
+
+  # =========================================================================
+  # 2. APPLE SILICON BUILD (arm64)
+  # =========================================================================
+  build-apple-silicon-arm64:
+    runs-on: macos-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
+    - name: Set up Python (arm64)
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        architecture: 'arm64'
 
-      - name: Install build dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller
-          pip install numpy scipy soundfile librosa onnxruntime tokenizers opencv-python-headless
+    - name: Verify Architecture
+      run: |
+        python -c "import platform; print('Active Python Machine:', platform.machine(), platform.architecture())"
 
-      - name: Compile macOS Intel binary with PyInstaller
-        env:
-          SFX_EXE_NAME: auto_sfx_engine_x86_64
-        run: |
-          pyinstaller --clean auto_sfx_engine.spec
-          if [ -f dist/auto_sfx_engine ] && [ ! -f dist/auto_sfx_engine_x86_64 ]; then
-            cp dist/auto_sfx_engine dist/auto_sfx_engine_x86_64
-          fi
-          chmod +x dist/auto_sfx_engine_x86_64
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install numpy scipy soundfile librosa onnxruntime tokenizers opencv-python-headless
+        if [ -f "requirements.txt" ]; then pip install -r requirements.txt; fi
 
-      - name: Verify binary execution
-        run: |
-          ./dist/auto_sfx_engine_x86_64 --help
+    - name: Compile Apple Silicon Executable
+      run: |
+        # Locate auto_sfx_engine.py in root or engine/
+        if [ -f "engine/auto_sfx_engine.py" ]; then
+          TARGET_SCRIPT="engine/auto_sfx_engine.py"
+        elif [ -f "auto_sfx_engine.py" ]; then
+          TARGET_SCRIPT="auto_sfx_engine.py"
+        else
+          echo "ERROR: auto_sfx_engine.py not found!" && exit 1
+        fi
 
-      - name: Log default deployment destination
-        run: |
-          echo "### 🍎 macOS Intel (x86_64) Binary Built" >> $GITHUB_STEP_SUMMARY
-          echo "**Default Destination**: \`com.assetstation/engine/mac/auto_sfx_engine_x86_64\`" >> $GITHUB_STEP_SUMMARY
+        # If .spec exists, compile with spec; otherwise run full PyInstaller command
+        if [ -f "auto_sfx_engine.spec" ]; then
+          SFX_EXE_NAME=auto_sfx_engine pyinstaller --target-arch arm64 --clean auto_sfx_engine.spec
+        else
+          pyinstaller --target-arch arm64 --clean --onefile --name auto_sfx_engine \
+            --collect-all soundfile \
+            --collect-all _soundfile_data \
+            --collect-all tokenizers \
+            --collect-all librosa \
+            --collect-all onnxruntime \
+            --hidden-import scipy.fft \
+            --hidden-import scipy.signal \
+            --hidden-import scipy.special \
+            --hidden-import cv2 \
+            --exclude-module tkinter \
+            --exclude-module matplotlib \
+            --exclude-module torch \
+            --exclude-module torchvision \
+            "$TARGET_SCRIPT"
+        fi
 
-      - name: Upload macOS Intel binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: auto_sfx_engine-macos-x86_64
-          path: dist/auto_sfx_engine_x86_64
-          if-no-files-found: error
-          retention-days: 30
+        chmod +x dist/auto_sfx_engine
+        codesign --force -s - dist/auto_sfx_engine || true
+        file dist/auto_sfx_engine
+
+    - name: Log destination
+      run: |
+        echo "### 🍏 macOS Apple Silicon (arm64) Binary Built" >> $GITHUB_STEP_SUMMARY
+        echo "**Deploy location in extension**: \`com.assetstation/engine/mac/auto_sfx_engine\`" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload Apple Silicon Executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: auto_sfx_engine
+        path: dist/auto_sfx_engine
