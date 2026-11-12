@@ -49,7 +49,7 @@ jobs:
 
         # If .spec exists, compile with spec; otherwise run full PyInstaller command
         if [ -f "auto_sfx_engine.spec" ]; then
-          SFX_EXE_NAME=auto_sfx_engine_x86_64 arch -x86_64 pyinstaller --target-arch x86_64 --clean auto_sfx_engine.spec
+          SFX_EXE_NAME=auto_sfx_engine_x86_64 TARGET_ARCH=x86_64 arch -x86_64 pyinstaller --clean auto_sfx_engine.spec
         else
           arch -x86_64 pyinstaller --target-arch x86_64 --clean --onefile --name auto_sfx_engine_x86_64 \
             --collect-all soundfile \
@@ -124,7 +124,7 @@ jobs:
 
         # If .spec exists, compile with spec; otherwise run full PyInstaller command
         if [ -f "auto_sfx_engine.spec" ]; then
-          SFX_EXE_NAME=auto_sfx_engine pyinstaller --target-arch arm64 --clean auto_sfx_engine.spec
+          SFX_EXE_NAME=auto_sfx_engine TARGET_ARCH=arm64 pyinstaller --clean auto_sfx_engine.spec
         else
           pyinstaller --target-arch arm64 --clean --onefile --name auto_sfx_engine \
             --collect-all soundfile \
