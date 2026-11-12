@@ -91,6 +91,7 @@ a.binaries = [
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 output_name = os.environ.get('SFX_EXE_NAME', 'auto_sfx_engine')
+target_arch = os.environ.get('TARGET_ARCH', None)
 
 exe = EXE(
     pyz,
@@ -109,7 +110,7 @@ exe = EXE(
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
+    target_arch=target_arch,
     codesign_identity=None,
     entitlements_file=None,
 )
